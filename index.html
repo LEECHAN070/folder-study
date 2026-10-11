@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-fmQjp6rTHM+WJ30TPjRFudfWVjtiDLjSPHWYVbosaGU='; style-src 'sha256-g4LM4lJ+8rrhdw2no/FiYLpzS0Vsa8tYnYIdVEaozoo='; img-src data:; connect-src https://script.google.com https://script.googleusercontent.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-JXGlGX3ePvBD53HwaQdDTTBo78Ng3XwfWxrl87PGskg='; style-src 'sha256-J8iK3qG7xsw87Nq96K0eny5jFYb2lX0Hkhq2uDs6vLU='; img-src data:; connect-src https://script.google.com https://script.googleusercontent.com; base-uri 'none'; form-action 'none'">
 <title>폴더 나누기 연구</title>
 <style>
   /* 모양 기준: docs/design.md (크림 바탕, 잉크 글자, 주황은 가장 중요한 버튼에만, 얇은 선·그림자 없음) */
@@ -102,6 +102,10 @@
   .hr { height: 1px; background: var(--hairline); margin: 26px 0; }
   .ticket { font-size: 40px; font-weight: 400; letter-spacing: -1px; color: var(--ink); margin: 0; }
   .w0 { width: 0; }
+  .consent { margin: 18px 0; }
+  .mail-link { text-decoration: none; display: inline-block; line-height: 20px; }
+  .mail-link.off { opacity: .5; pointer-events: none; }
+  p.small { font-size: 12px; }
   .card .row { margin-top: 12px; }
 
   @media (max-width: 600px) {
@@ -267,7 +271,7 @@ function welcome() {
     row.append(h("button", { class: "btn", onclick: () => { clearSaved(); window.scrollTo(0, 0); welcome(); } },
                  "처음부터 다시 진행"));
   }
-  const consent = h("section", { class: "card", style: "margin:18px 0" },
+  const consent = h("section", { class: "card consent" },
     h("h2", null, "개인정보 수집·이용 동의 (필수)"),
     h("ul", { class: "points" },
       h("li", null, h("span", { class: "strong" }, "수집 항목: "),
@@ -588,20 +592,16 @@ function lotteryBlock() {
   const href = "mailto:" + to + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
   const copied = h("span", { class: "status" });
   const ok = h("input", { type: "checkbox", id: "agree2" });
-  const link = h("a", { class: "btn primary", "aria-disabled": "true",
-                        style: "text-decoration:none;display:inline-block;line-height:20px;opacity:.5;pointer-events:none" },
-                 "메일로 응모하기");
+  const link = h("a", { class: "btn primary mail-link off", "aria-disabled": "true" }, "메일로 응모하기");
   ok.addEventListener("change", () => {
     if (ok.checked) {
       link.setAttribute("href", href);
       link.removeAttribute("aria-disabled");
-      link.style.opacity = "1";
-      link.style.pointerEvents = "auto";
+      link.classList.remove("off");
     } else {
       link.removeAttribute("href");
       link.setAttribute("aria-disabled", "true");
-      link.style.opacity = ".5";
-      link.style.pointerEvents = "none";
+      link.classList.add("off");
     }
   });
   wrap.append(
@@ -623,7 +623,7 @@ function lotteryBlock() {
       } }, "내용 복사"), copied),
     h("p", { class: "muted" },
       `메일 앱이 열리지 않을 경우 ${to} 로 참가 번호(${S.participant})와 응모권(${n}장)을 적어 보내 주시기 바랍니다.`),
-    h("p", { class: "muted", style: "font-size:12px" },
+    h("p", { class: "muted small" },
       `※ 추첨 ${WINNERS}명, 상품은 문화상품권 5천 원이며, 금액과 인원은 상황에 따라 달라질 수 있습니다.`));
   return wrap;
 }
