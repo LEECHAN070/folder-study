@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-eKgRDVASXxPcq2HmEBr7l9bkVL1iSwY8eoIrqGL3egg='; style-src 'sha256-qodQnxpDxdSEWh5fuTOfcZFHwEz9oBI+uBq/a1dMovo='; img-src data:; connect-src https://script.google.com https://script.googleusercontent.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-BHACIw6e4Yb98KIjKZQ1CRoIB/JGTeZGYwDFDJzFZ7M='; style-src 'sha256-qodQnxpDxdSEWh5fuTOfcZFHwEz9oBI+uBq/a1dMovo='; img-src data:; connect-src https://script.google.com https://script.googleusercontent.com; base-uri 'none'; form-action 'none'">
 <title>폴더 나누기 연구</title>
 <style>
   /* 모양 기준: docs/design.md (크림 바탕, 잉크 글자, 주황은 가장 중요한 버튼에만, 얇은 선·그림자 없음) */
@@ -188,6 +188,8 @@ const RETENTION = DATA.retention || "분석이 끝날 때까지(늦어도 2026�
 const DEV = /[#&?]dev(?=$|[=&?#])/.test(location.hash + location.search);
 const STORE_KEY = "fileorg_study_v2_" + DATA.digest + (DEV ? "_dev" : "");
 const DONE_KEY = STORE_KEY + "_done";
+// 끝낸 응답의 참가 번호·응모권. 창을 닫은 뒤 다시 열어도 응모할 수 있게 기기에 남김(개인 식별 정보 아님)
+const RESULT_KEY = STORE_KEY + "_result";
 const EMAIL_RE = /^[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,190}\.[A-Za-z]{2,24}$/; // 받는 쪽과 같은 규칙
 
 const $app = document.getElementById("app");
@@ -246,6 +248,13 @@ function load() {
   return null;
 }
 function alreadyDone() { try { return localStorage.getItem(DONE_KEY) === "1"; } catch (e) { return false; } }
+function savedResult() {
+  try {
+    const r = JSON.parse(localStorage.getItem(RESULT_KEY) || "null");
+    if (r && /^[0-9a-f]{8,16}$/.test(r.participant) && r.tickets >= 1) return r;
+  } catch (e) { /* 무시 */ }
+  return null;
+}
 function clearSaved() { try { localStorage.removeItem(STORE_KEY); } catch (e) { /* 무시 */ } }
 const ITEMS = new Map(DATA.items.map((i) => [i.id, i]));
 
@@ -351,6 +360,7 @@ function welcome() {
         "설문 종료 후 희망자에 한해 본인의 메일 주소를 입력하여 접수. 다른 연락처나 아이디는 받지 않으며, 접수 시 응모 확인 번호가 발급됨.")),
     h("p", { class: "muted" }, "※ 상품의 금액과 인원은 상황에 따라 달라질 수 있습니다."),
     alreadyDone() ? h("p", { class: "muted" }, "이 기기에서 이미 참여하셨습니다. 다시 참여하셔도 응모권은 늘어나지 않습니다.") : null,
+    alreadyDone() && savedResult() ? lotteryBlock(savedResult()) : null, // 응모를 아직 못 하셨다면 여기서 가능
     resumed ? row : null,
     consent,
     h("div", { class: "row" }, start,
@@ -643,6 +653,7 @@ async function submit() {
     } catch (e) { sent = false; }
   }
   if (!DEV && sent) store(DONE_KEY, "1");
+  if (sent) store(RESULT_KEY, JSON.stringify({ participant: S.participant, tickets: tickets(), at: S.finished_at }));
   doneScreen(sent, closed);
 }
 
@@ -686,9 +697,9 @@ function maskEmail(email) {
   const [name, host] = email.split("@");
   return name.slice(0, Math.min(2, name.length)) + "***@" + host;
 }
-function receiptKey() { return "fileorg_receipt_" + DATA.digest + "_" + S.participant + (DEV ? "_dev" : ""); }
-function loadReceipt() {
-  try { return JSON.parse(localStorage.getItem(receiptKey()) || "null"); } catch (e) { return null; }
+function receiptKey(pid) { return "fileorg_receipt_" + DATA.digest + "_" + (pid || S.participant) + (DEV ? "_dev" : ""); }
+function loadReceipt(pid) {
+  try { return JSON.parse(localStorage.getItem(receiptKey(pid)) || "null"); } catch (e) { return null; }
 }
 
 /* 응모 확인서: 확인 번호는 받는 쪽(구글 표)에도 같은 번호로 남아, 나중에 이 번호로 응모했는지 확인할 수 있습니다. */
@@ -720,18 +731,20 @@ function receiptCard(r) {
       `※ 추첨 ${WINNERS}명, 상품은 문화상품권 5천 원이며, 금액과 인원은 상황에 따라 달라질 수 있습니다. 당첨 시 입력하신 메일 주소로 개별 연락드립니다.`));
 }
 
-function lotteryBlock() {
-  const n = tickets();
+/* info: 이미 끝낸 응답을 다시 열었을 때 { participant, tickets }. 없으면 지금 진행한 응답 */
+function lotteryBlock(info) {
+  const who = info ? info.participant : S.participant;
+  const n = info ? info.tickets : tickets();
   const wrap = h("div", { class: "card" }, h("h2", null, "추첨 응모 (선택)"));
   if (n < 1) {
     wrap.append(h("p", null, "필수 파일 분류를 모두 완료하시면 응모하실 수 있습니다."));
     return wrap;
   }
   if (!CAN_SEND && !DEV) {
-    wrap.append(h("p", null, "응모 접수는 현재 준비 중입니다. 아래 참가 번호를 보관해 주시기 바랍니다: " + S.participant));
+    wrap.append(h("p", null, "응모 접수는 현재 준비 중입니다. 아래 참가 번호를 보관해 주시기 바랍니다: " + who));
     return wrap;
   }
-  const saved = loadReceipt();
+  const saved = loadReceipt(who);
   if (saved) return receiptCard(saved);
 
   const email = h("input", { type: "email", id: "entry-email", maxlength: "254", autocomplete: "email",
@@ -749,7 +762,7 @@ function lotteryBlock() {
     msg.className = "status"; msg.textContent = "접수 중입니다…";
     try {
       const reply = await postJson({
-        type: "entry", email: value, participant: S.participant, tickets: n,
+        type: "entry", email: value, participant: who, tickets: n,
         consent_entry: CONSENT_VERSION, dev: DEV ? true : undefined,
       });
       if (reply === "closed") {
@@ -760,10 +773,10 @@ function lotteryBlock() {
       const code = reply.startsWith("ok:") ? reply.slice(3) : "";
       if (!code) throw new Error("no code"); // 받는 쪽이 번호를 만들지 못함 → 접수된 것으로 보지 않음
       const receipt = {
-        code, participant: S.participant, tickets: n, email_masked: maskEmail(value),
+        code, participant: who, tickets: n, email_masked: maskEmail(value),
         at: new Date().toLocaleString("ko-KR", { hour12: false }),
       };
-      try { localStorage.setItem(receiptKey(), JSON.stringify(receipt)); } catch (e) { /* 저장이 막혀도 계속 */ }
+      try { localStorage.setItem(receiptKey(who), JSON.stringify(receipt)); } catch (e) { /* 저장이 막혀도 계속 */ }
       wrap.replaceWith(receiptCard(receipt));
     } catch (e) {
       email.disabled = false; check();
@@ -784,7 +797,7 @@ function lotteryBlock() {
     msg,
     h("p", { class: "muted small" },
       `※ 접수가 끝나면 응모 확인 번호가 표시됩니다. 추첨 ${WINNERS}명, 상품은 문화상품권 5천 원이며, 금액과 인원은 상황에 따라 달라질 수 있습니다.`),
-    DATA.apply_email ? h("p", { class: "muted small" }, `문의 및 삭제 요청: ${DATA.apply_email} (참가 번호 ${S.participant} 함께 기재)`) : null);
+    DATA.apply_email ? h("p", { class: "muted small" }, `문의 및 삭제 요청: ${DATA.apply_email} (참가 번호 ${who} 함께 기재)`) : null);
   return wrap;
 }
 
