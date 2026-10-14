@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-qkBxQn2E4hv+CRKiLjMSYbPAMNVuhmMnLeI7KH4tSL8='; style-src 'sha256-qodQnxpDxdSEWh5fuTOfcZFHwEz9oBI+uBq/a1dMovo='; img-src data:; connect-src https://script.google.com https://script.googleusercontent.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-bpmmWtpD8bUYxqky/2D/wyc3yevMS7FWAhrKc+hoEZA='; style-src 'sha256-qodQnxpDxdSEWh5fuTOfcZFHwEz9oBI+uBq/a1dMovo='; img-src data:; connect-src https://script.google.com https://script.googleusercontent.com; base-uri 'none'; form-action 'none'">
 <title>폴더 나누기 연구</title>
 <style>
   /* 모양 기준: docs/design.md (크림 바탕, 잉크 글자, 주황은 가장 중요한 버튼에만, 얇은 선·그림자 없음) */
@@ -142,6 +142,11 @@ const VIA_APPS_SCRIPT = DATA.transport === "apps-script";
 const CAN_SEND = !!COLLECT_URL || VIA_APPS_SCRIPT; // 둘 다 없으면 '결과 파일 저장'만 보여 줍니다
 const MAX_MS = 300000;
 const BATCH = 5; // 추가로 이만큼 분류할 때마다 응모권 +1 (2026-10-14: 10 → 5)
+const MILESTONE = 25; // 답한 파일 25개마다 보너스 응모권 1장(이벤트)
+const COMPLETE_BONUS = 3; // 모든 파일을 한 번씩 끝까지 분류하면 보너스 응모권 3장(이벤트)
+const ROW_MAX = 100; // 한 줄(행)에 담는 답의 최대 개수. 많이 하면 줄을 나눠 기록(추첨은 한 사람으로 합산)
+// 계속 참여(한 바퀴 더) 허용 기준: 선택이 너무 빠르거나 한쪽으로 쏠리거나 이전 선택과 너무 다르면 멈춤
+const TRUST_MEDIAN_MS = 1500, TRUST_TOP = 0.6, TRUST_SAME = 0.5;
 const DEVICE_LIMIT = 3; // 같은 기기에서 응모권을 인정하는 응답 수(안내 문구용, 집계는 받은 뒤에 함)
 const PAIN_MIN = 4; // 불편함 설문에서 이만큼 답하면 응모권 +1
 
@@ -293,7 +298,7 @@ function startNew() {
     version: 2, client: "web", digest: DATA.digest, package: DATA.title, participant: pid,
     started_at: new Date().toISOString(), finished_at: null,
     order: core.concat(extra), core_count: core.length, limit: core.length, index: 0, shown_at: Date.now(),
-    answers: {}, survey: {}, pain: {},
+    answers: {}, survey: {}, pain: {}, passes: [],
     profile: null, // 시작 화면에서 연령대·성별·직업을 받은 뒤 값이 들어감(null이면 아직 안 받음)
     consent: { version: CONSENT_VERSION, at: new Date().toISOString() },
   };
@@ -309,15 +314,37 @@ function withConsent(survey) {
   return Object.assign({}, survey, profile, device ? { device } : {},
                        { consent: S.consent ? S.consent.version : null });
 }
-function countTier(tier) { return Object.values(S.answers).filter((a) => a.tier === tier).length; }
 function painAnswered() {
   return PAIN.filter((p) => { const v = S.pain[p.id]; return Array.isArray(v) ? v.length > 0 : !!v; }).length;
 }
-function tickets() {
-  const core = countTier("core") >= S.core_count ? 1 : 0;
-  return core + Math.floor(countTier("extra") / BATCH) + (painAnswered() >= PAIN_MIN ? 1 : 0);
+const CORE_IDS = new Set(DATA.items.filter((i) => i.tier === "core").map((i) => i.id));
+/* 응모권: 상한 없음. 저장하는 줄(행) 단위로 세므로 받는 곳(분석)의 계산과 항상 같습니다.
+ * 줄마다: 필수 20개를 모두 했으면 1장 + (필수 외 파일 5개마다 1장) + (답한 파일 25개마다 1장)
+ * 사람마다: 불편함 설문 4개 이상 1장 + 모든 파일을 한 번씩 끝까지 분류하면 3장 */
+function allPasses() { return (S.passes || []).concat([S.answers]); }
+function rowsOf(pass) { // 한 바퀴의 답을 번호순으로 ROW_MAX개씩 나눈 줄들
+  const list = Object.entries(pass).sort((a, b) => (a[1].order || 0) - (b[1].order || 0));
+  const rows = [];
+  for (let i = 0; i < list.length; i += ROW_MAX) rows.push(list.slice(i, i + ROW_MAX));
+  return rows;
 }
-const MAX_EXTRA = Math.floor(DATA.items.filter((i) => i.tier !== "core").length / BATCH);
+function allRows() { return allPasses().flatMap(rowsOf); }
+function rowTickets(row) {
+  const ids = row.map(([id]) => id);
+  const core = CORE_IDS.size > 0 && Array.from(CORE_IDS).every((id) => ids.includes(id)) ? 1 : 0;
+  const extra = ids.filter((id) => !CORE_IDS.has(id)).length;
+  return core + Math.floor(extra / BATCH) + Math.floor(ids.length / MILESTONE);
+}
+function completedAll() {
+  const seen = new Set();
+  for (const p of allPasses()) for (const id of Object.keys(p)) seen.add(id);
+  return DATA.items.length > 0 && DATA.items.every((i) => seen.has(i.id));
+}
+function tickets() {
+  const rows = allRows().reduce((n, r) => n + rowTickets(r), 0);
+  return rows + (painAnswered() >= PAIN_MIN ? 1 : 0) + (completedAll() ? COMPLETE_BONUS : 0);
+}
+function totalAnswered() { return allPasses().reduce((n, p) => n + Object.keys(p).length, 0); }
 
 // ── 화면 공통 ─────────────────────────────────────────────
 function devBanner() {
@@ -361,7 +388,7 @@ function welcome() {
     h("h2", null, "개인정보 수집·이용 동의 (필수)"),
     h("ul", { class: "points" },
       h("li", null, h("span", { class: "strong" }, "수집 항목: "),
-        "폴더 선택 결과, 확신 정도, 선택에 걸린 시간, 설문 응답, 연령대·성별·직업(선택 응답), 무작위 참가 번호, 무작위 기기 번호(같은 기기의 중복 응답 확인용). 이름·연락처·계정 정보는 수집하지 않으며, 추첨 응모 시에만 메일 주소를 별도 동의를 받아 수집함."),
+        "폴더 선택 결과, 확신 정도, 선택에 걸린 시간, 설문 응답, 연령대·성별·직업(선택 응답), 무작위 참가 번호, 무작위 기기 번호(같은 기기의 중복 응답 확인용). 이름·연락처·계정 정보는 수집하지 않으며, 추첨 응모 시에만 메일 주소를 별도 동의를 받아 수집함. 응답이 많으면 저장 시 여러 줄로 나뉘어 기록될 수 있으나 추첨에서는 한 사람으로 처리함."),
       h("li", null, h("span", { class: "strong" }, "수집 목적: "), "파일 정리 서비스 설계 및 연구 분석(응답자 특성별 비교 포함), 추첨 응모권 산정."),
       h("li", null, h("span", { class: "strong" }, "보유 기간: "), `${RETENTION}. 이후 지체 없이 삭제.`),
       h("li", null, h("span", { class: "strong" }, "제3자 제공: "), "없음. 연구 목적 외에는 사용하지 않음."),
@@ -379,7 +406,10 @@ function welcome() {
       DEADLINE ? h("li", null, h("span", { class: "strong" }, "참여 기한: "), `${deadlineLabel()}까지`) : null,
       h("li", null, "정답은 없으며, 처음 떠오른 폴더를 선택해 주시기 바랍니다. 확신이 없으면 '확신 정도'를 함께 표시해 주십시오."),
       h("li", null, h("span", { class: "strong" }, "응모권: "),
-        `필수 완료 시 1장, 이후 ${BATCH}개마다 1장, 불편함 질문 응답 시 1장 추가 (최대 ${MAX_EXTRA + 2}장). 많이 참여할수록 당첨 확률이 높아집니다.`),
+        `필수 완료 시 1장, 이후 ${BATCH}개마다 1장, 불편함 질문 응답 시 1장이 추가됩니다. `
+        + `이벤트로 답한 파일 ${MILESTONE}개마다 보너스 1장, 모든 파일을 끝까지 분류하면 보너스 ${COMPLETE_BONUS}장이 `
+        + "지급됩니다. 응모권 상한은 없으며, 응답이 성실하면 파일을 섞어 다시 이어서 참여하실 수 있습니다. "
+        + "많이 참여할수록 당첨 확률이 높아집니다."),
       h("li", null, h("span", { class: "strong" }, "상품: "),
         `문화상품권 5천 원, 추첨을 통해 ${WINNERS}명. 당첨자에게는 개별 연락.`),
       h("li", null, h("span", { class: "strong" }, "당첨 확률: "),
@@ -494,9 +524,14 @@ function fileScreen() {
   const grid = h("div", { class: "grid" }, DATA.folders.map((f, n) =>
     h("button", { class: "btn folder", onclick: () => pick(f, conf) }, h("kbd", null, String(n + 1)), f)));
   const left = total - S.index;
+  const flash = S.flash;
+  S.flash = null;
+  const inRow = Object.keys(S.answers).length % ROW_MAX;
+  const nextEvent = MILESTONE - (inRow % MILESTONE);
   render(h("div", null,
     h("div", { class: "topbar" },
       h("span", { class: "muted" }, `${S.index + 1} / ${total}`), progressBar(S.index / total), ticketPill()),
+    flash ? h("div", { class: "status ok", role: "status" }, flash) : null,
     h("div", { class: "name" }, item.name),
     h("div", { class: "muted" }, `받은 날 ${item.date} · ${item.source || "출처 미상"}`),
     viewer(item),
@@ -505,7 +540,9 @@ function fileScreen() {
     h("p", { class: "q" }, "어느 폴더에 두시겠습니까? (선택 시 다음 파일로 이동)"),
     grid,
     h("div", { class: "row spread" },
-      h("span", { class: "muted" }, prev ? `이전 선택: ${prev.folder}` : (left <= 3 && S.index > 0 ? "거의 완료되었습니다." : "")),
+      h("span", { class: "muted" }, prev ? `이전 선택: ${prev.folder}`
+        : (left <= 3 && S.index > 0 ? "거의 완료되었습니다."
+           : `이벤트: ${nextEvent}개를 더 분류하면 보너스 응모권 1장`)),
       h("button", { class: "btn text", onclick: back, disabled: S.index === 0 }, "← 이전 파일"))));
   document.onkeydown = (e) => {
     if (e.target && ["INPUT", "TEXTAREA"].includes(e.target.tagName)) return;
@@ -519,10 +556,15 @@ function pick(folder, conf) {
   const id = S.order[S.index];
   const item = ITEMS.get(id);
   const ms = Math.min(Math.max(Date.now() - S.shown_at, 0), MAX_MS);
+  const isNew = !(id in S.answers);
   S.answers[id] = { name: item.name, folder, confidence: conf, unsure: conf < 3, ms, order: S.index + 1,
                     tier: item.tier === "core" ? "core" : "extra" };
   S.index += 1;
   S.shown_at = Date.now();
+  const count = Object.keys(S.answers).length;
+  if (isNew && count % MILESTONE === 0) { // 줄(행) 안에서 25개째마다 보너스(받는 곳 계산과 같음)
+    S.flash = `이벤트 달성: ${count}개를 분류하여 보너스 응모권 1장이 지급되었습니다. (현재 ${tickets()}장)`;
+  }
   save();
   showCurrent();
 }
@@ -532,7 +574,7 @@ function back() {
 
 function afterBatch() {
   const done = Object.keys(S.answers).length;
-  if (S.order.length - S.limit <= 0) return surveyScreen();
+  if (S.order.length - S.limit <= 0) return passEnd();
   const first = S.limit === S.core_count;
   render(h("div", null,
     h("h1", null, first ? "필수 파일 분류가 완료되었습니다" : "감사합니다"),
@@ -543,6 +585,58 @@ function afterBatch() {
         S.limit = Math.min(S.limit + BATCH, S.order.length); S.shown_at = Date.now(); save(); showCurrent();
       } }, `${BATCH}개 추가 분류 (+1장)`),
       h("button", { class: "btn", onclick: () => { S.limit = S.index; save(); surveyScreen(); } }, "여기까지 진행"))));
+}
+
+/* 응답 성실도(간단 점검). 최종 판단은 받은 뒤 분석에서 다시 하며, 기준은 공개하지 않습니다. */
+function trust() {
+  const cur = Object.values(S.answers);
+  const ms = cur.map((a) => a.ms).sort((a, b) => a - b);
+  const median = ms.length ? ms[Math.floor(ms.length / 2)] : 0;
+  const counts = {};
+  for (const a of cur) counts[a.folder] = (counts[a.folder] || 0) + 1;
+  const top = cur.length ? Math.max(...Object.values(counts)) / cur.length : 1;
+  let same = null;
+  const prev = (S.passes || []).length ? S.passes[S.passes.length - 1] : null;
+  if (prev) {
+    const ids = Object.keys(S.answers).filter((id) => prev[id]);
+    if (ids.length >= 20) same = ids.filter((id) => prev[id].folder === S.answers[id].folder).length / ids.length;
+  }
+  const ok = cur.length >= 20 && median >= TRUST_MEDIAN_MS && top < TRUST_TOP && (same === null || same >= TRUST_SAME);
+  return { ok };
+}
+
+function startNextPass() {
+  S.passes = (S.passes || []).concat([S.answers]);
+  S.answers = {};
+  S.order = shuffled(DATA.items.map((i) => i.id), S.participant + "p" + S.passes.length);
+  S.index = 0;
+  S.limit = S.order.length;
+  S.shown_at = Date.now();
+  S.flash = "다음 바퀴를 시작합니다. 파일 순서가 섞여 있으며, 응모권은 계속 늘어납니다.";
+  save();
+  showCurrent();
+}
+
+/* 모든 파일을 한 번씩 분류했을 때: 성실하면 계속 이어서 참여할 수 있습니다. */
+function passEnd() {
+  const pass = (S.passes || []).length + 1;
+  const t = trust();
+  render(h("div", null,
+    h("h1", null, pass === 1 ? "모든 파일 분류를 마치셨습니다" : `${pass}번째 분류를 마치셨습니다`),
+    h("p", { class: "ticket" }, `응모권 ${tickets()}장`),
+    completedAll()
+      ? h("p", { class: "status ok" }, `이벤트: 모든 파일을 끝까지 분류하여 보너스 응모권 ${COMPLETE_BONUS}장이 포함되어 있습니다.`)
+      : null,
+    t.ok
+      ? h("div", null,
+          h("p", null, "응답이 성실하여 계속 이어서 참여하실 수 있습니다. 파일을 섞어 처음부터 다시 분류하시면 응모권이 계속 늘어납니다. (응모권 상한 없음)"),
+          h("div", { class: "row" },
+            h("button", { class: "btn primary", onclick: startNextPass }, "한 바퀴 더 (계속 참여)"),
+            h("button", { class: "btn", onclick: surveyScreen }, "여기까지 제출")))
+      : h("div", null,
+          h("p", null, "응답 성실도 점검에서 계속 참여 기준을 충족하지 못하여, 여기까지의 응모권으로 제출해 주시기 바랍니다."),
+          h("div", { class: "row" },
+            h("button", { class: "btn primary", onclick: surveyScreen }, "제출 진행")))));
 }
 
 // ── 설문 ──────────────────────────────────────────────────
@@ -611,12 +705,29 @@ function painScreen() {
 }
 
 // ── 제출 ──────────────────────────────────────────────────
-function resultJson() {
-  const out = Object.assign({ type: "result" }, S);
-  delete out.order; delete out.index; delete out.limit; delete out.shown_at;
-  out.shown_count = Object.keys(S.answers).length;
-  out.tickets = tickets();
-  return out;
+/* 같은 사람의 응답을 저장 줄(행) 단위로 나눕니다. 첫 줄은 참가 번호 그대로이고, 이어지는 줄은
+ * 그 번호에서 만든 번호와 묶음 표시(group)를 달아 보냅니다. 추첨에서는 한 사람으로 합산됩니다. */
+function derivedId(k) {
+  const a = hash32(S.participant + "|" + k).toString(16).padStart(8, "0");
+  const b = hash32(k + "|" + S.participant).toString(16).padStart(8, "0");
+  return (a + b).slice(0, 12);
+}
+function rowPayloads() {
+  const pain = painAnswered() >= PAIN_MIN ? 1 : 0;
+  return allRows().map((row, k) => {
+    const head = k === 0;
+    const answers = {};
+    for (const [id, a] of row) answers[id] = a;
+    const survey = head ? S.survey
+      : { consent: S.consent ? S.consent.version : null, device: deviceId(), group: S.participant, part: String(k + 1) };
+    return {
+      type: "result", client: "web", digest: S.digest, package: S.package,
+      participant: head ? S.participant : derivedId(k),
+      started_at: S.started_at, finished_at: S.finished_at,
+      shown_count: row.length, tickets: rowTickets(row) + (head ? pain : 0),
+      answers, survey, pain: head ? S.pain : {},
+    };
+  });
 }
 /* 받는 쪽의 답은 "ok" 또는 "ok:응모확인번호"(뒤에 판 이름이 붙을 수 있음)뿐입니다. */
 function acceptReply(reply) {
@@ -670,15 +781,20 @@ function download(name, text) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 async function submit() {
-  S.finished_at = new Date().toISOString();
+  S.finished_at = S.finished_at || new Date().toISOString();
   save();
   let sent = false, closed = false;
   if (CAN_SEND) {
     render(h("div", null, h("h1", null, "제출 중입니다"), h("p", { class: "muted" }, "잠시만 기다려 주십시오.")));
+    const rows = rowPayloads();
     try {
-      const reply = await postJson(resultJson());
-      closed = reply === "closed"; // 기한이 지나 받는 곳이 받지 않음
-      sent = !closed;
+      // 줄이 여러 개일 수 있습니다. 이미 보낸 줄은 다시 보내지 않고 이어서 보냅니다.
+      for (let k = S.sent_rows || 0; k < rows.length; k++) {
+        const reply = await postJson(rows[k]);
+        if (reply === "closed") { closed = true; break; } // 기한이 지나 받는 곳이 받지 않음
+        S.sent_rows = k + 1;
+      }
+      sent = !closed && (S.sent_rows || 0) >= rows.length;
     } catch (e) { sent = false; }
   }
   if (!DEV && sent) store(DONE_KEY, "1");
@@ -698,6 +814,7 @@ function doneScreen(sent, closed) {
   const kids = [
     h("h1", null, "참여해 주셔서 감사합니다"),
     h("p", { class: "ticket" }, `응모권 ${tickets()}장`),
+    h("p", { class: "muted small" }, "※ 표시된 응모권은 응답 검토(선택 속도·다양성 등) 후 확정되며, 기준에 맞지 않는 응답은 제외될 수 있습니다."),
     sent
       ? h("p", { class: "status ok" }, DEV ? "시험 모드이므로 실제로 전송하지 않았습니다. 제출이 성공한 것으로 처리하여 이후 화면을 보여 드립니다."
                                          : "결과가 정상적으로 제출되었습니다. 별도로 보내실 내용은 없습니다.")
@@ -705,8 +822,10 @@ function doneScreen(sent, closed) {
           h("p", null, (CAN_SEND ? "제출에 실패하였습니다. 아래 버튼으로 결과 파일을 저장하여 " : "결과 파일을 저장하여 ")
                         + (DATA.apply_email ? `${DATA.apply_email} 로 메일을 보내 주시기 바랍니다. (파일 1개 첨부)`
                                             : "보내 주시기 바랍니다. (파일 1개)")),
-          h("button", { class: "btn primary", onclick: () => download(fileName, JSON.stringify(resultJson(), null, 1)) },
-            "결과 파일 저장")),
+          h("div", { class: "row" },
+            h("button", { class: "btn primary", onclick: () => submit() }, "다시 보내기"),
+            h("button", { class: "btn", onclick: () => download(fileName, JSON.stringify(rowPayloads(), null, 1)) },
+              "결과 파일 저장"))),
     both ? h("p", null, `참고: AI는 ${both}개 중 ${same}개를 선택하신 폴더와 동일하게 분류하였습니다.`) : null,
     h("div", { class: "hr" }),
     lotteryBlock(),
