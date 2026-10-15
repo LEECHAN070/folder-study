@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-b4I7Mr5arHnQ79vdlLKjXP6OKJeAbDcnC6V4Fg/OyQk='; style-src 'sha256-qodQnxpDxdSEWh5fuTOfcZFHwEz9oBI+uBq/a1dMovo='; img-src data:; connect-src https://script.google.com https://script.googleusercontent.com; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-LPnPbWxmi9ng2WKZ4sFJ9iMpslrL6HBBbevfnJ/fKm8='; style-src 'sha256-qodQnxpDxdSEWh5fuTOfcZFHwEz9oBI+uBq/a1dMovo='; img-src data:; connect-src https://script.google.com https://script.googleusercontent.com; base-uri 'none'; form-action 'none'">
 <title>폴더 나누기 연구</title>
 <style>
   /* 모양 기준: docs/design.md (크림 바탕, 잉크 글자, 주황은 가장 중요한 버튼에만, 얇은 선·그림자 없음) */
@@ -176,7 +176,7 @@ const PAIN = [
     options: ["꼭 사용해 보고 싶음", "무료라면 사용해 보겠음", "잘 모르겠음", "사용하지 않을 것 같음"] },
 ];
 // 동의 안내의 판 번호. 안내 내용을 바꾸면 올려서, 어느 안내에 동의했는지 결과에 남깁니다.
-const CONSENT_VERSION = "v4"; // v2: 연령대·성별·직업(선택 응답) 추가, v3: 무작위 기기 번호(중복 응답 확인용) 추가, v4: 만 14세 이상 확인
+const CONSENT_VERSION = "v3"; // v2: 연령대·성별·직업(선택 응답) 추가, v3: 무작위 기기 번호(중복 응답 확인용) 추가
 const WINNERS = DATA.winners || 5; // 뽑을 인원(참가자에게 알림)
 // 참여 기한(그날 23:59까지, 한국 시간). 기한 뒤에는 시작할 수 없고, 받는 곳도 같은 기한으로 막습니다.
 const DEADLINE = DATA.deadline || "";
@@ -376,10 +376,8 @@ function welcome() {
   const row = h("div", { class: "row" });
   // 이 기기에서 이미 끝낸 응답이 있으면, 기기를 함께 쓰는 다른 사람이라고 표시해야 새로 시작할 수 있습니다.
   const done = alreadyDone();
-  // 만 14세 미만은 법정대리인 동의가 필요하므로(개인정보 보호법 제22조의2) 만 14세 이상만 참여합니다.
-  const sync = () => { start.disabled = !(agree.checked && adult.checked && (!other || other.checked)); };
+  const sync = () => { start.disabled = !(agree.checked && (!other || other.checked)); };
   const agree = h("input", { type: "checkbox", id: "agree", onchange: sync });
-  const adult = h("input", { type: "checkbox", id: "adult", onchange: sync });
   const other = done ? h("input", { type: "checkbox", id: "other", onchange: sync }) : null;
   const start = h("button", { class: "btn primary", disabled: true,
                               onclick: () => { startNew(); if (other) { S.shared = true; save(); } showCurrent(); } },
@@ -403,13 +401,11 @@ function welcome() {
       h("li", null, h("span", { class: "strong" }, "운영 및 문의: "),
         DATA.apply_email ? `${OPERATOR} (${DATA.apply_email}). 삭제를 요청하실 때는 참가 번호를 함께 보내 주시기 바랍니다.`
                          : `${OPERATOR}.`)),
-    h("label", { class: "opt", for: "adult" }, adult, "만 14세 이상입니다."),
     h("label", { class: "opt", for: "agree" }, agree, "위 내용을 확인하였으며, 개인정보 수집·이용에 동의합니다."));
   render(h("div", null,
     h("h1", null, "폴더 나누기 연구 설문"),
     h("p", null, "다운로드 폴더에 받은 가상의 파일을 보고 알맞은 폴더를 선택하는 연구입니다. 결과는 파일 정리 앱 설계에 활용됩니다."),
     h("ul", { class: "points" },
-      h("li", null, h("span", { class: "strong" }, "참여 대상: "), "만 14세 이상이면 직업·성별과 관계없이 누구나 참여 가능"),
       h("li", null, h("span", { class: "strong" }, "소요 시간: "), `필수 ${n}개, 약 5분`),
       DEADLINE ? h("li", null, h("span", { class: "strong" }, "참여 기한: "), `${deadlineLabel()}까지`) : null,
       h("li", null, "정답은 없으며, 처음 떠오른 폴더를 선택해 주시기 바랍니다. 확신이 없으면 '확신 정도'를 함께 표시해 주십시오."),
